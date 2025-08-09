@@ -1,0 +1,12 @@
+@'
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.idea/
+.vscode/
+docker/data/
+docker/rabbitmq/
+Task_1_v3.py.bak
+'@ | Set-Content -Encoding UTF8 .\.gitignore

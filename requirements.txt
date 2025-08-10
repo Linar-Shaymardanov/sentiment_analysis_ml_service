@@ -1,6 +1,7 @@
-fastapi==0.116.1
-uvicorn==0.22.0
-pika==1.3.2
-sqlalchemy==2.0.42
 sqlmodel==0.0.24
 psycopg2-binary==2.9.10
+sqlalchemy==2.0.42
+fastapi==0.116.1
+uvicorn==0.22.0pydantic-settings
+sqlmodel
+psycopg[binary]

@@ -1,0 +1,6 @@
+fastapi==2.9.10
+uvicorn==2.9.10
+pika==2.9.10
+sqlalchemy==2.9.10
+sqlmodel==2.9.10
+psycopg2-binary==2.9.10

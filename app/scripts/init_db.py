@@ -3,7 +3,13 @@ from app.database.database import init_db, get_database_engine
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from app.models.user import User
-from app.services.crud.user import create_user, top_up_user, charge_user, create_prediction, get_transactions_for_user, get_predictions_for_user
+from app.models.prediction import Prediction
+import json
+
+# правильные импорты из сервисов (по фактическим файлам у тебя)
+from app.services.crud.user import create_user, add_credits, charge_credits
+from app.services.crud.transaction import get_transactions_for_user
+from app.services.crud.prediction import create_prediction as create_prediction_record, get_predictions_for_user
 
 def seed_and_test(drop_all: bool = True):
     init_db(drop_all=drop_all)
@@ -22,16 +28,24 @@ def seed_and_test(drop_all: bool = True):
         demo_db = session.exec(select(User).where(User.email == "demo@user.com")).first()
         print("Demo user:", demo_db)
 
-        # top up
-        tx1 = top_up_user(demo_db.id, 50, session, description="Initial topup")
+        # top up (используем add_credits)
+        tx1 = add_credits(demo_db.id, 50, session)
         print("Top up tx:", tx1)
 
-        # charge
-        tx2 = charge_user(demo_db.id, 30, session, description="Run prediction")
+        # charge (используем charge_credits)
+        tx2 = charge_credits(demo_db.id, 30, session)
         print("Charge tx:", tx2)
 
         # create prediction record
-        pred = create_prediction(demo_db.id, input_data="I love this!", result={"sentiment": "positive", "score": 0.92}, cost=10, session=session)
+        # У нас create_prediction в services принимает объект Prediction (см. app/services/crud/prediction.py)
+        pred_obj = Prediction(
+            user_id=demo_db.id,
+            model_name="stub-model",
+            input_meta="I love this!",
+            result_json=json.dumps({"sentiment": "positive", "score": 0.92})
+        )
+
+        pred = create_prediction_record(pred_obj, session)
         print("Prediction created:", pred)
 
         # list transactions & predictions

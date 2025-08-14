@@ -3,5 +3,5 @@ uvicorn==0.22.0
 sqlalchemy==2.0.42
 sqlmodel==0.0.24
 pydantic-settings==2.10.1
-psycopg-binary==3.2.2
+psycopg[binary]==3.2.2
 asyncpg==0.30.0

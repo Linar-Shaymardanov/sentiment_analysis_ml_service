@@ -1,5 +1,12 @@
-@'
 # Sentiment Analysis ML Service
 
-Clean repository with Task_1_v3 (object model). Further structure and docker-compose to be added.
-'@ | Set-Content -Encoding UTF8 .\README.md
+Учебный проект. В этой ветке — структура и docker-compose для локального запуска сервисов:
+- app (FastAPI / Python)
+- web-proxy (nginx)
+- rabbitmq (message broker)
+- database (Postgres)
+
+Файлы:
+- docker-compose.yml — конфигурация для разработки
+- Dockerfile.app — сборка образа приложения
+- .env.template — шаблон переменных окружения

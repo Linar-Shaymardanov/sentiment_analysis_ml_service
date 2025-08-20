@@ -43,7 +43,11 @@ class TransactionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 class PredictRequest(BaseModel):
-    text: str
+    # не делаем жёсткую валидацию — пусть воркер сам проверит содержимое
+    text: Optional[str] = None
+
+    class Config:
+        extra = "allow"
 
 class PredictResponse(BaseModel):
     input: str

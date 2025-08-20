@@ -1,9 +1,19 @@
-# Task_1_v3.py
+# app/Task_1_v3.py
+"""
+Task_1_v3: Entities + lightweight text 'ML' model for quick predictions.
+
+Этот файл содержит:
+- исходные dataclass'ы (User, Balance, TransactionRecord, PredictionRecord и т.д.)
+- лёгкую rule-based текстовую модель TextClassificationModel
+- вспомогательную функцию run_prediction(payload) для использования в worker
+"""
+
 from dataclasses import dataclass, field
 from typing import List, Optional, Protocol, Dict, Any
 from datetime import datetime, timezone
 import os
 import re
+import json
 
 # --------------------
 # Исключения
@@ -35,9 +45,6 @@ class Balance:
 
 @dataclass
 class User:
-    """
-    Пользователь системы.
-    """
     id: int
     email: str
     _password: str
@@ -62,9 +69,6 @@ class User:
         return self._password == pw
 
     def top_up(self, amount: int) -> 'TransactionRecord':
-        """
-        Пополнение баланса — возвращает объект TransactionRecord для записи в историю.
-        """
         self.balance.add(amount)
         return TransactionRecord(
             id=-1,
@@ -75,10 +79,6 @@ class User:
         )
 
     def charge(self, amount: int, description: Optional[str] = None) -> 'TransactionRecord':
-        """
-        Списание с баланса — возвращает объект TransactionRecord.
-        amount должен быть положительным, в записи хранится отрицательное значение.
-        """
         self.balance.subtract(amount)
         return TransactionRecord(
             id=-1,
@@ -89,18 +89,10 @@ class User:
         )
 
 # --------------------
-# 2. Транзакция — запись в истории транзакций
+# 2. Транзакция
 # --------------------
 @dataclass
 class TransactionRecord:
-    """
-    Отдельная сущность истории транзакций.
-    id: int - идентификатор (для БД или логов)
-    user_id: int - пользователь
-    amount: int - положительное = пополнение, отрицательное = списание
-    timestamp: datetime - время транзакции (UTC-aware)
-    description: Optional[str] - текст описания
-    """
     id: int
     user_id: int
     amount: int
@@ -108,7 +100,21 @@ class TransactionRecord:
     description: Optional[str] = None
 
 # --------------------
-# 3. Интерфейс ML-модели и конкретная модель (изображения/текста можно менять)
+# 3. Prediction record
+# --------------------
+@dataclass
+class PredictionRecord:
+    id: int
+    user_id: int
+    model_name: str
+    input_meta: str
+    result_json: Optional[Dict[str, Any]]
+    cost: int
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    errors: List[str] = field(default_factory=list)
+
+# --------------------
+# 4. ML Model Protocol + text rule-based model
 # --------------------
 class MLModel(Protocol):
     name: str
@@ -120,122 +126,101 @@ class MLModel(Protocol):
         ...
 
 @dataclass
-class ImageClassificationModel:
-    name: str = "imgcls-v1"
-    labels: List[str] = field(default_factory=lambda: ["cat", "dog", "car", "tree"])
+class TextClassificationModel:
+    name: str = "text-rule-v1"
+    positive_tokens: List[str] = field(default_factory=lambda: [
+        "good", "great", "love", "excellent", "awesome", "nice", "amazing", "best", "like", "happy"
+    ])
+    negative_tokens: List[str] = field(default_factory=lambda: [
+        "bad", "terrible", "hate", "worst", "awful", "dislike", "sad", "angry", "problem", "disappointed"
+    ])
+    neutral_threshold: float = 0.1
 
-    def validate(self, data: bytes) -> List[str]:
-        if not data:
-            return ["Пустые данные"]
-        return []
+    def validate(self, data: Any) -> List[str]:
+        errors = []
+        if not isinstance(data, str):
+            errors.append("input must be a string")
+        elif not data.strip():
+            errors.append("input text is empty")
+        return errors
 
-    def predict(self, data: bytes) -> Dict[str, Any]:
-        if not data:
-            raise ValidationError("Empty image data")
-        idx = data[0] % len(self.labels)
+    def predict(self, data: str) -> Dict[str, Any]:
+        # very small rule-based scoring:
+        txt = data.lower()
+        pos = sum(txt.count(tok) for tok in self.positive_tokens)
+        neg = sum(txt.count(tok) for tok in self.negative_tokens)
+
+        total = pos + neg
+        # Raw score in [-1,1]
+        if total == 0:
+            score = 0.5  # neutral baseline -> score 0.5
+        else:
+            # normalized to [0,1], positive bias
+            score = (pos / total) if total > 0 else 0.5
+            # map to [0,1] with some smoothing
+            score = round(0.25 + 0.75 * score, 3)  # ensure not 0.0
+
+        if total == 0 or abs(pos - neg) / (total if total else 1) < self.neutral_threshold:
+            sentiment = "neutral"
+        else:
+            sentiment = "positive" if pos > neg else "negative"
+
         return {
             "model": self.name,
-            "predicted_label": self.labels[idx],
-            "confidence": round(0.5 + (idx / (2 * len(self.labels))), 2),
+            "sentiment": sentiment,
+            "score": float(score),
+            "pos_count": pos,
+            "neg_count": neg,
         }
 
 # --------------------
-# 4. Request / Job для классификации изображения
+# 5. Helper: run_prediction(payload)
 # --------------------
-@dataclass
-class ClassificationRequest:
-    id: int
-    user: User
-    model: MLModel
-    image_path: str
-    cost_per_image: int = 5
-    result: Optional[Dict[str, Any]] = None
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-
-    def __post_init__(self) -> None:
-        self._validate_image_path()
-
-    def _validate_image_path(self) -> None:
-        if not os.path.isfile(self.image_path):
-            raise ValidationError(f"Файл не найден: {self.image_path}")
-
-    def compute_cost(self) -> int:
-        return self.cost_per_image
-
-    def execute(self) -> 'PredictionRecord':
-        """
-        Выполнить задачу классификации:
-        - валидировать вход (model.validate)
-        - вычислить стоимость
-        - списать с баланса пользователя (user.charge)
-        - если нет ошибок — выполнить predict
-        - сформировать и вернуть PredictionRecord
-        """
-        # 1) читаем данные и валидируем
-        with open(self.image_path, "rb") as f:
-            data = f.read()
-        errors = self.model.validate(data)
-
-        # 2) вычисляем стоимость
-        cost = self.compute_cost()
-
-        # 3) списание (если недостаточно будет выброшено исключение)
-        tx = self.user.charge(cost, description=f"Списание за классификацию (req_id={self.id})")
-
-        # 4) predict (только если нет ошибок)
-        result = None
-        if not errors:
-            result = self.model.predict(data)
-            self.result = result
-
-        # 5) формируем запись предсказания
-        pred = PredictionRecord(
-            id=-1,
-            user_id=self.user.id,
-            model_name=self.model.name,
-            input_path=self.image_path,
-            errors=errors,
-            result=result,
-            cost=cost,
-            timestamp=self.timestamp,
-        )
-        return pred
-
-# --------------------
-# 5. История предсказаний
-# --------------------
-@dataclass
-class PredictionRecord:
+def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Отдельная сущность истории предсказаний.
-    id: int
-    user_id: int
-    model_name: str
-    input_path: str
-    errors: List[str] - ошибки валидации (если есть)
-    result: Optional[dict] - результат предсказания (None если ошибок)
-    cost: int - списанные кредиты
-    timestamp: datetime (UTC-aware)
+    payload expected keys:
+      - user_id: int
+      - input_data: str
+      - cost: Optional[int] (worker will use if present; otherwise default=1)
+      - model: Optional[str]
+    Returns a dict suitable to POST to API callback:
+    { "user_id": ..., "input_data": ..., "result": {...}, "cost": ... }
     """
-    id: int
-    user_id: int
-    model_name: str
-    input_path: str
-    errors: List[str]
-    result: Optional[Dict[str, Any]]
-    cost: int
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Basic validation
+    if not isinstance(payload, dict):
+        raise ValidationError("payload must be a dict")
+    if "user_id" not in payload:
+        raise ValidationError("missing user_id")
+    if "input_data" not in payload:
+        raise ValidationError("missing input_data")
+    user_id = int(payload["user_id"])
+    input_data = payload["input_data"]
+    cost = int(payload.get("cost", 1))
+
+    # choose model (only text model supported here)
+    model_name = payload.get("model", "text-rule-v1")
+    model = TextClassificationModel()
+
+    errors = model.validate(input_data)
+    result = None
+    if not errors:
+        result = model.predict(input_data)
+
+    response = {
+        "user_id": user_id,
+        "input_data": str(input_data),
+        "result": result,
+        "cost": cost,
+        "model": model_name,
+        "errors": errors,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    return response
 
 # --------------------
-# 6. Небольшой пример использования (при запуске как скрипт)
+# 6. Quick demo when run directly
 # --------------------
 if __name__ == "__main__":
-    # Демонстрация работы сущностей (без БД)
-    user = User(id=1, email="test@mail.ru", _password="password123", balance=Balance(credits=50))
-    model = ImageClassificationModel()
-
-    # Показать текущие значения и timezone-aware дату
-    print("Task_1_v3 loaded. Entities: User, Balance, TransactionRecord, PredictionRecord, ClassificationRequest")
-    print(f"User created_at (UTC): {user.created_at.isoformat()}")
-    # Примечание: execute требует реального файла на диске, поэтому здесь мы не вызываем execute.
-
+    sample = {"user_id": 1, "input_data": "I love this product, it's the best!", "cost": 1}
+    out = run_prediction(sample)
+    print("Preview prediction:", json.dumps(out, indent=2, ensure_ascii=False))

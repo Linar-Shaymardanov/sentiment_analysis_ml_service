@@ -1,4 +1,5 @@
-# docker-compose.yml
+version: "3.8"
+
 services:
   app:
     build:
@@ -20,8 +21,8 @@ services:
 
   worker:
     build:
-      context: .                 # <- Важно: корневой контекст проекта
-      dockerfile: worker/Dockerfile
+      context: ./worker
+      dockerfile: Dockerfile
     restart: unless-stopped
     env_file:
       - ./app/.env

@@ -1,12 +1,41 @@
 @'
+# Python / general
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.env
-.idea/
+
+# IDEs
 .vscode/
+.idea/
+
+# env, secrets (локальные файлы проекта)
+.env
+app/.env
+.env.local
+.env.*.local
+
+# Virtualenv / venv
+.venv/
+venv/
+env/
+ENV/
+
+# Docker local volumes and data directories (do not push)
 docker/data/
 docker/rabbitmq/
-Task_1_v3.py.bak
-'@ | Set-Content -Encoding UTF8 .\.gitignore
+volumes/
+postgres_data/
+rabbitmq_data/
+
+# App/runtime
+instance/
+*.sqlite3
+
+# backups
+*.bak
+
+# OS
+Thumbs.db
+.DS_Store
+'@ | Out-File -Encoding utf8 .gitignore

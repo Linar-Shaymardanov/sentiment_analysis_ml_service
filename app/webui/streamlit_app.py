@@ -9,21 +9,31 @@ Streamlit web UI для ML-сервиса (интеграция с FastAPI backe
 - массовая загрузка CSV с колонкой `text` и верификация/отправка каждой строки
 - просмотр истории предсказаний (GET /api/predict/)
 - админ-панель (если backend возвращает is_admin в профиле)
-Настройки API вверху файла.
 """
 
+import os
+# если запуск локально — принудительно локальный адрес
+API_BASE = os.environ.get("API_BASE", "http://localhost:8080")
 import streamlit as st
 import requests
 import json
 import base64
 import csv
-from io import StringIO, BytesIO
-from typing import Optional, List, Dict
+from io import StringIO
+from typing import Optional, List, Dict, Tuple
 
 # ============================
-# Настройки — поменяй при необходимости
+# Настройки — сначала ENV, затем streamlit secrets, затем дефолт
 # ============================
-API_BASE = st.secrets.get("API_BASE", "http://localhost:8080")  # базовый URL back-end
+API_BASE = os.environ.get("API_BASE")
+if not API_BASE:
+    try:
+        # в окружении streamlit может не иметь secrets — защищаемся
+        API_BASE = st.secrets.get("API_BASE", None)
+    except Exception:
+        API_BASE = None
+API_BASE = API_BASE or "http://localhost:8080"
+
 SIGNUP_URL = f"{API_BASE}/api/auth/signup"
 SIGNIN_URL = f"{API_BASE}/api/auth/signin"
 PREDICT_QUEUE_URL = f"{API_BASE}/api/predict/queue"
@@ -63,8 +73,7 @@ def clear_token():
     st.session_state.pop("profile", None)
 
 def decode_jwt_payload(token: str) -> dict:
-    """Декодируем payload JWT без проверки подписи (для извлечения user id/email).
-       Используется только для удобства UI — не для безопасности."""
+    """Декодируем payload JWT без проверки подписи (для удобства UI)."""
     try:
         parts = token.split(".")
         if len(parts) < 2:
@@ -76,7 +85,7 @@ def decode_jwt_payload(token: str) -> dict:
         return {}
 
 # ---- функции взаимодействия с API ----
-def signup(email: str, password: str) -> (bool, str):
+def signup(email: str, password: str) -> Tuple[bool, str]:
     payload = {"email": email, "password": password}
     resp = api_post(SIGNUP_URL, json_data=payload)
     if resp is None:
@@ -88,25 +97,22 @@ def signup(email: str, password: str) -> (bool, str):
     except Exception:
         return False, resp.text
 
-def signin(email: str, password: str) -> (bool, Optional[str]):
-    # backend может принимать form-data (OAuth2) — отправим так, т.к. более совместимо
-    data = {"username": email, "password": password}
-    resp = api_post(SIGNIN_URL, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+def signin(email: str, password: str) -> Tuple[bool, Optional[str]]:
+    # исправлено: backend ожидает JSON {"email": ..., "password": ...}
+    payload = {"email": email, "password": password}
+    resp = api_post(SIGNIN_URL, json_data=payload, headers={"Content-Type": "application/json"})
     if resp is None:
         return False, None
     if resp.status_code in (200, 201):
         try:
             j = resp.json()
             token = j.get("access_token") or j.get("token") or j.get("access") or j.get("token_value")
-            # Иногда сервис возвращает {cookie_name: token, token_type: 'bearer'} -> try first value
             if not token and isinstance(j, dict):
-                # try first string-like value
                 for v in j.values():
                     if isinstance(v, str) and v.count(".") == 2:
                         token = v
                         break
             if not token:
-                # если backend вернул cookie as token field name (weird), return whole json
                 st.warning("Signin response does not contain standard access_token field; saved raw response in session.")
                 st.session_state["signin_raw"] = j
                 return True, None
@@ -135,7 +141,7 @@ def get_profile():
             return None
     return None
 
-def topup(amount: int) -> (bool, str):
+def topup(amount: int) -> Tuple[bool, str]:
     headers = st.session_state.get("auth_headers")
     if not headers:
         return False, "Not authenticated"
@@ -149,12 +155,11 @@ def topup(amount: int) -> (bool, str):
     except Exception:
         return False, resp.text
 
-def queue_prediction_single(text: str, cost:int=1) -> (bool, str):
+def queue_prediction_single(text: str, cost:int=1) -> Tuple[bool, str]:
     headers = st.session_state.get("auth_headers")
     if not headers:
         return False, "Not authenticated"
     payload = {"input_data": text, "cost": cost}
-    # Если backend требует user_id explicitly, попытаемся взять его из токена:
     token = st.session_state.get("token")
     if token:
         payload["user_id"] = decode_jwt_payload(token).get("user_id") or decode_jwt_payload(token).get("user")
@@ -171,7 +176,7 @@ def queue_prediction_single(text: str, cost:int=1) -> (bool, str):
     except Exception:
         return False, resp.text
 
-def get_history() -> (bool, List[dict], str):
+def get_history() -> Tuple[bool, List[dict], str]:
     headers = st.session_state.get("auth_headers")
     if not headers:
         return False, [], "Not authenticated"
@@ -221,10 +226,8 @@ with st.sidebar:
                     if token_or_msg:
                         set_token(token_or_msg)
                         st.success("Вход выполнен")
-                        # попробуем получить профиль
                         st.session_state["profile"] = get_profile()
                     else:
-                        # token is None but signin returned success (possible cookie-based or raw)
                         st.info("Вход: успешный ответ, но токен не явный. Проверьте backend contract.")
                 else:
                     st.error(f"Signin failed: {token_or_msg}")
@@ -244,7 +247,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("Настройки API")
     st.text(API_BASE)
-    st.caption("Если API на другом хосте — отредактируй константу API_BASE в файле webui/streamlit_app.py")
+    st.caption("Если API на другом хосте — отредактируй переменную окружения API_BASE или ./app/webui/.streamlit/secrets.toml")
 
 # ---------------------------
 # Pages
@@ -260,11 +263,9 @@ if page == "Главная":
     - отправка текстового запроса на предсказание (через очередь)
     - загрузка CSV с колонкой `text` для массовых запросов (каждая строка становится задачей)
     """)
-
     st.subheader("Quick checks")
     st.write("Текущий токен:")
     st.code(st.session_state.get("token") or "не авторизован")
-
     if st.button("Получить профиль (если backend поддерживает /api/user/me)"):
         profile = get_profile()
         if profile:
@@ -346,7 +347,6 @@ elif page == "История":
             if not data:
                 st.info("Нет предсказаний")
             else:
-                # ожидаем список объектов; попробуем нормализовать вывод
                 st.write(f"Найдено {len(data)} записей")
                 st.dataframe(data)
 
@@ -361,7 +361,6 @@ elif page == "Баланс/TopUp":
     if prof:
         st.subheader("Профиль")
         st.json(prof)
-        # пополнение
         amount = st.number_input("Сумма пополнения", min_value=1, value=10, step=1)
         if st.button("Пополнить баланс"):
             ok, msg = topup(amount)
@@ -382,13 +381,10 @@ elif page == "Admin (опционально)":
         prof = st.session_state.get("profile") or get_profile()
         if prof and prof.get("is_admin"):
             st.success("Detected admin in profile")
-            # simple admin action: manual top-up by admin to another user via API (endpoint должен быть реализован)
             user_email = st.text_input("Email пользователя для пополнения", key="admin_email")
             admin_amount = st.number_input("Amount to credit", min_value=1, value=10, step=1, key="admin_amount")
             if st.button("Credit user (admin)"):
-                # API for admin credit may differ; we'll try /api/admin/topup or /api/user/topup?admin=true
                 hdr = st.session_state.get("auth_headers")
-                # Try admin endpoint variations
                 tried = []
                 success = False
                 for url in [f"{API_BASE}/api/admin/topup", f"{API_BASE}/api/user/topup?admin=true", f"{API_BASE}/api/user/topup_admin"]:

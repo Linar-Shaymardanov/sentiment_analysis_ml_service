@@ -19,10 +19,11 @@ services:
       timeout: 3s
       retries: 5
 
+  # <-- ВАЖНО: контекст = корень проекта, dockerfile указываем из worker/
   worker:
     build:
-      context: ./worker
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./worker/Dockerfile
     restart: unless-stopped
     env_file:
       - ./app/.env
@@ -36,6 +37,18 @@ services:
       interval: 20s
       timeout: 5s
       retries: 3
+
+  webui:
+    build:
+      context: ./app/webui
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      API_BASE: "http://app:8080"
+    depends_on:
+      - app
 
   rabbitmq:
     image: rabbitmq:3-management

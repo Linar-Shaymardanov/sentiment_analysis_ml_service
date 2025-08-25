@@ -1,76 +1,80 @@
 # app/routes/predict.py
-import os
+from fastapi import APIRouter, HTTPException
+from typing import List, Any, Dict
 import json
+import os
 import pika
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status, Body
-from sqlmodel import Session
-from app.schemas import PredictRequest, PredictResponse, PredictionOut
-from app.deps import get_current_user
-from app.database.database import get_session
-from app.models.prediction import Prediction as PredictionModel
-from app.services.crud.prediction import create_prediction, get_predictions_for_user
-from app.services.crud.user import charge_credits
 
-# убираем prefix — зададим его в api.py
-router = APIRouter(tags=["Predict"])
+from sqlmodel import Session, select
+from app.database.database import engine
+from app.models.prediction import Prediction
+from app.schemas import PredictionOut, PredictRequest
 
-RABBIT_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
-RABBIT_USER = os.getenv("RABBITMQ_USER", "rmuser")
-RABBIT_PASS = os.getenv("RABBITMQ_PASS", "rmpassword")
-QUEUE_NAME = os.getenv("PREDICTION_QUEUE", "predictions")
+router = APIRouter()
 
-def publish_to_queue(payload: dict):
-    creds = pika.PlainCredentials(RABBIT_USER, RABBIT_PASS)
-    params = pika.ConnectionParameters(host=RABBIT_HOST, credentials=creds, heartbeat=60)
-    conn = pika.BlockingConnection(params)
-    ch = conn.channel()
-    ch.queue_declare(queue=QUEUE_NAME, durable=True)
-    body = json.dumps(payload)
-    ch.basic_publish(
-        exchange="",
-        routing_key=QUEUE_NAME,
-        body=body,
-        properties=pika.BasicProperties(delivery_mode=2)
-    )
-    conn.close()
-
-@router.post("/queue", status_code=status.HTTP_202_ACCEPTED)
-def enqueue_predict(payload: PredictRequest, user = Depends(get_current_user), session: Session = Depends(get_session)):
-    COST = 1
-    try:
-        tx = charge_credits(user.id, COST, session)
-    except Exception as e:
-        raise HTTPException(status_code=402, detail=str(e))
-
-    msg = {"user_id": user.id, "input_data": payload.text}
-    try:
-        publish_to_queue(msg)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to publish task: {e}")
-
-    return {"message": "Task queued", "cost": COST}
-
-@router.post("/result", status_code=200)
-def prediction_result(data: dict = Body(...), session: Session = Depends(get_session)):
-    required = ("user_id", "input_data", "result", "cost")
-    for k in required:
-        if k not in data:
-            raise HTTPException(status_code=400, detail=f"Missing {k} in body")
-
-    pred = PredictionModel(
-        user_id=int(data["user_id"]),
-        input_data=data["input_data"],
-        result=data["result"],
-        cost=int(data["cost"])
-    )
-    try:
-        created = create_prediction(pred, session)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create prediction: {e}")
-    return {"message": "Prediction recorded", "id": created.id}
+def _normalize_result_field(val: Any) -> Dict:
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except Exception:
+            return {}
+    if val is None:
+        return {}
+    # if already a dict or json-like, return as-is
+    return val
 
 @router.get("/", response_model=List[PredictionOut])
-def list_my_predictions(user = Depends(get_current_user), session: Session = Depends(get_session)):
-    preds = get_predictions_for_user(user.id, session)
-    return preds
+def list_predictions():
+    with Session(engine) as session:
+        rows = session.exec(select(Prediction).order_by(Prediction.id.desc())).all()
+        # гарантируем, что поле result — dict, а не строка
+        for r in rows:
+            r.result = _normalize_result_field(r.result)
+        return rows
+
+@router.post("/queue", status_code=202)
+def enqueue_predict(req: PredictRequest):
+    payload = {"text": req.text}
+    host = os.getenv("RABBITMQ_HOST", "rabbitmq")
+    user = os.getenv("RABBITMQ_USER", "rmuser")
+    pwd = os.getenv("RABBITMQ_PASS", "rmpassword")
+    queue = os.getenv("PREDICTION_QUEUE", "predictions")
+
+    creds = pika.PlainCredentials(user, pwd)
+    params = pika.ConnectionParameters(host=host, credentials=creds)
+    try:
+        conn = pika.BlockingConnection(params)
+        ch = conn.channel()
+        ch.queue_declare(queue=queue, durable=True)
+        ch.basic_publish(
+            exchange="",
+            routing_key=queue,
+            body=json.dumps(payload).encode("utf-8"),
+            properties=pika.BasicProperties(delivery_mode=2),
+        )
+        conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to enqueue: {e}")
+    return {"status": "queued"}
+
+@router.post("/result")
+def receive_result(payload: Dict):
+    # minimal validation
+    for field in ("user_id", "input_data", "result"):
+        if field not in payload:
+            raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+
+    payload["result"] = _normalize_result_field(payload.get("result"))
+    from sqlmodel import Session as _Session
+    with _Session(engine) as session:
+        p = Prediction(
+            user_id=payload["user_id"],
+            model_name=payload.get("model_name"),
+            input_data=payload.get("input_data"),
+            result=payload["result"],
+            cost=payload.get("cost", 0),
+        )
+        session.add(p)
+        session.commit()
+        session.refresh(p)
+    return {"status": "ok", "id": p.id}

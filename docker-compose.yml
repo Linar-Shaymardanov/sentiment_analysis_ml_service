@@ -62,10 +62,10 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: ["CMD-SHELL", "python - <<'PY'\nimport sys, urllib.request\ntry:\n    r = urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)\n    sys.exit(0 if r.getcode()==200 else 1)\nexcept Exception:\n    sys.exit(1)\nPY"]
       interval: 10s
-      timeout: 5s
-      retries: 10
+      timeout: 3s
+      retries: 5
 
   database:
     image: postgres:15
